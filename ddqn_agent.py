@@ -23,14 +23,14 @@ def extract_tensors(experiences):
     return t1, t2, t3, t4
 
 
-def create_networks(device, agent_type):
+def create_networks(device, agent_type, possible_actions):
     main_info = get_config('MainInfo')
     h = int(main_info['board_height'])
     w = int(main_info['board_width'])
     # create networks
     neurons_number = h * w if agent_type == 'light' else h * w / 2
     input_size = 2 * h * w if agent_type == 'light' else h * w  # the light agents get extra information
-    num_actions = h * w if agent_type == 'light' else h
+    num_actions = len(possible_actions)
     target_net = DQN(input_size, num_actions, neurons_number).to(device)
     policy_net = DQN(input_size, num_actions, neurons_number).to(device)
     # set up target network as the same weights
@@ -42,6 +42,7 @@ def create_networks(device, agent_type):
 class DdqnAgent(Agent):
 
     def __init__(self, device, agent_type):
+        super().__init__(strategy=EpsilonGreedyStrategy(), agent_type=agent_type)  # use the 'EpsilonGreedyStrategy' strategy
         # load values from config
         ddqn_info = get_config('DdqnAgentInfo')
         self.batch_size = int(ddqn_info['batch_size'])
@@ -50,13 +51,12 @@ class DdqnAgent(Agent):
         self.target_update = int(ddqn_info['target_update'])
         self.lr = float(ddqn_info['lr'])
         # init networks
-        self.num_actions, self.target_net, self.policy_net = create_networks(device, agent_type)
+        self.num_actions, self.target_net, self.policy_net = create_networks(device, agent_type, self.possible_actions)
         # other fields
         self.optimizer = optim.Adam(params=self.policy_net.parameters(), lr=self.lr)
         self.memory = ReplayMemory()
         self.current_step = 0
         self.device = device
-        super().__init__(strategy=EpsilonGreedyStrategy(), agent_type=agent_type)  # use the 'EpsilonGreedyStrategy' strategy
 
     def select_action(self, state,alive_zombies):
         rate = self.strategy.get_exploration_rate(current_step=self.current_step)
@@ -78,7 +78,15 @@ class DdqnAgent(Agent):
             with torch.no_grad():
                 # here we are getting the action from one pass along the network. after that we:
                 # convert the tensor to data, then move to cpu using then converting to numpy and lastly, wrapping back to tensor
-                action = self.policy_net(state).argmax(dim=0).data.cpu().numpy()[0]  # max over rows! (dim=0)
+                if self.agent_type == 'zombie' or len(alive_zombies)  == 0 :
+                    action = self.policy_net(state).argmax(dim=0).data.cpu().numpy()[0]  # max over rows! (dim=0)
+                else:
+                    alive_zombie_indexes = [getattr(alive_zombies[i],'id') for i in range(len(alive_zombies))]
+                    net_actions = self.policy_net(state).data.cpu()
+                    alive_zombie_indexes_actions = net_actions[alive_zombie_indexes]
+                    action = alive_zombie_indexes_actions.argmax(dim=0)
+                    index = action.numpy()[0]
+                    action = int(alive_zombies[index].y * self.BOARD_WIDTH + alive_zombies[index].x)
                 return action, rate, self.current_step
 
     def learn(self, state, action, next_state, reward):
@@ -91,7 +99,7 @@ class DdqnAgent(Agent):
             next_q_values = QValues.get_next(self.target_net, next_states, self.policy_net)
             target_q_values = (next_q_values * self.gamma) + rewards
 
-            loss = F.mse_loss(current_q_values, target_q_values)
+            loss = F.mse_loss(current_q_values, target_q_values).to(self.device)
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
