@@ -9,6 +9,7 @@ from core.DQN import DQN
 import random
 import torch
 from runnable_scripts.Utils import get_config
+import math
 
 
 def extract_tensors(experiences):
@@ -44,6 +45,7 @@ class DdqnAgent(Agent):
     def __init__(self, device, agent_type):
         super().__init__(strategy=EpsilonGreedyStrategy(), agent_type=agent_type)  # use the 'EpsilonGreedyStrategy' strategy
         # load values from config
+        self.LIGHT_SIZE = int(get_config("MainInfo")['light_size'])
         ddqn_info = get_config('DdqnAgentInfo')
         self.batch_size = int(ddqn_info['batch_size'])
         self.gamma = float(ddqn_info['gamma'])
@@ -58,8 +60,10 @@ class DdqnAgent(Agent):
         self.current_step = 0
         self.device = device
 
-    def select_action(self, state,alive_zombies):
+    def select_action(self, state,alive_zombies,writer):
         rate = self.strategy.get_exploration_rate(current_step=self.current_step)
+        writer.add_scalar('exploration_rate/train', rate, self.current_step)
+
         self.current_step += 1
         random_number = random.random()
         if rate > random_number:
@@ -71,7 +75,7 @@ class DdqnAgent(Agent):
                     action = random.randrange(self.num_actions)
                 else:
                     index = random.randrange(zombies_num)
-                    action = int(alive_zombies[index].y * self.BOARD_WIDTH + alive_zombies[index].x)
+                    action = int(max(alive_zombies[index].y-math.floor(self.LIGHT_SIZE/2),0)* self.BOARD_WIDTH + max(alive_zombies[index].x-math.floor(self.LIGHT_SIZE/2),0))
 
             return action, rate, self.current_step  # explore
         else:
@@ -86,10 +90,13 @@ class DdqnAgent(Agent):
                     alive_zombie_indexes_actions = net_actions[alive_zombie_indexes]
                     action = alive_zombie_indexes_actions.argmax(dim=0)
                     index = action.numpy()[0]
-                    action = int(alive_zombies[index].y * self.BOARD_WIDTH + alive_zombies[index].x)
+                    try:
+                        action = int((max(alive_zombies[index].y-math.floor(self.LIGHT_SIZE/2),0)) * self.BOARD_WIDTH + (max(alive_zombies[index].x-math.floor(self.LIGHT_SIZE/2),0)))
+                    except:
+                        print("An exception occurred")
                 return action, rate, self.current_step
 
-    def learn(self, state, action, next_state, reward):
+    def learn(self, state, action, next_state, reward,writer):
         self.memory.push(Experience(state, torch.tensor([action], device=self.device), next_state, torch.tensor([reward], device=self.device)))
         if self.memory.can_provide_sample(self.batch_size):
             experiences = self.memory.sample(self.batch_size)
@@ -100,6 +107,12 @@ class DdqnAgent(Agent):
             target_q_values = (next_q_values * self.gamma) + rewards
 
             loss = F.mse_loss(current_q_values, target_q_values).to(self.device)
+            writer.add_scalar('Loss/train', loss, self.current_step)
+            writer.add_histogram('current_q_values/train', current_q_values, self.current_step)
+            writer.add_histogram('target_q_values/train', target_q_values, self.current_step)
+            writer.add_histogram('rewards/train', rewards, self.current_step)
+
+
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
@@ -107,6 +120,8 @@ class DdqnAgent(Agent):
         if self.current_step % self.target_update == 0:
             # update the target net to the same weights as the policy net
             self.target_net.load_state_dict(self.policy_net.state_dict())
+
+
 
     def reset(self):
         pass

@@ -14,7 +14,7 @@ import torchvision.transforms as T
 from runnable_scripts.Utils import get_config, plot_progress
 from itertools import count
 import torch
-
+from torch.utils.tensorboard import SummaryWriter
 
 def update_variables():
     MAX_HIT_POINTS = int(get_config("MainInfo")['max_hit_points'])
@@ -72,6 +72,7 @@ class Game:
         self.device = device
         self.current_screen = None
         self.done = False
+        self.writer = SummaryWriter(log_dir= '../runs')
 
     def calculate_start_positions(self):
         zombie_home_length = int(self.grid.get_height() - 2 * self.grid.get_width() * math.tan(self.max_angle * math.pi / 180))
@@ -98,8 +99,8 @@ class Game:
             zombie_master_reward = 0
             episode_start_time = time.time()
             for time_step in count():
-                action_zombie, rate, current_step = self.agent_zombie.select_action(state_zombie,self.alive_zombies)
-                action_light, rate, current_step = self.agent_light.select_action(state_light,self.alive_zombies)
+                action_zombie, rate, current_step = self.agent_zombie.select_action(state_zombie,self.alive_zombies,self.writer)
+                action_light, rate, current_step = self.agent_light.select_action(state_light,self.alive_zombies,self.writer)
 
                 # update dict
                 steps_dict_light['epsilon'].append(rate)
@@ -114,8 +115,8 @@ class Game:
                     zombie_master_reward += reward
                 next_state_zombie, next_state_light = self.get_state()
 
-                self.agent_zombie.learn(state_zombie.unsqueeze(0), action_zombie, next_state_zombie.unsqueeze(0), reward)
-                self.agent_light.learn(state_light.unsqueeze(0), action_light, next_state_light.unsqueeze(0), reward * -1)  # agent_light gets the opposite
+                self.agent_zombie.learn(state_zombie.unsqueeze(0), action_zombie, next_state_zombie.unsqueeze(0), reward,self.writer)
+                self.agent_light.learn(state_light.unsqueeze(0), action_light, next_state_light.unsqueeze(0), reward * -1,self.writer)  # agent_light gets the opposite
 
                 state_zombie, state_light = next_state_zombie, next_state_light
 
@@ -147,7 +148,6 @@ class Game:
             The action is an angle between 0 and 180 degrees, that
             decides the direction of the bubble.
         light_action
-
         Returns
         -------
         ob, reward, episode_over, info : tuple
