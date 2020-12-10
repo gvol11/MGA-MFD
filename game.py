@@ -1,4 +1,5 @@
 import copy
+import sys
 import time
 import os
 import pygame
@@ -17,7 +18,7 @@ import torch
 
 def update_variables():
     MAX_HIT_POINTS = int(get_config("MainInfo")['max_hit_points'])
-    MAX_ANGLE = int(get_config("MainInfo")['max_angle'])
+    MAX_ANGLE = int(get_config("MainInfo")['max_angle']) * math.pi / 180
     MAX_VELOCITY = int(get_config("MainInfo")['max_velocity'])
     BOARD_WIDTH = int(get_config("MainInfo")['board_width'])
     BOARD_HEIGHT = int(get_config("MainInfo")['board_height'])
@@ -26,7 +27,7 @@ def update_variables():
 
 class Game:
     MAX_HIT_POINTS = int(get_config("MainInfo")['max_hit_points'])
-    MAX_ANGLE = int(get_config("MainInfo")['max_angle'])
+    MAX_ANGLE = int(get_config("MainInfo")['max_angle']) * math.pi / 180
     MAX_VELOCITY = int(get_config("MainInfo")['max_velocity'])
     BOARD_WIDTH = int(get_config("MainInfo")['board_width'])
     BOARD_HEIGHT = int(get_config("MainInfo")['board_height'])
@@ -38,6 +39,9 @@ class Game:
         self.light_size = int(main_info['light_size'])
         self.max_angle = int(main_info['max_angle'])
         self.start_positions = self.calculate_start_positions()
+        if len(self.start_positions) < 2:
+            print("The angle is too wide!")
+            sys.exit()
         # set interactive mode
         self.interactive_mode = main_info.getboolean('interactive_mode')
         if self.interactive_mode:
@@ -55,6 +59,7 @@ class Game:
         self.agent_light = agent_light(device, 'light')
         # load main info
         self.steps_per_episodes = int(main_info['zombies_per_episode']) + int(main_info['board_width']) - 1
+        self.zombies_per_episode = int(main_info['zombies_per_episode'])
         self.check_point = int(main_info['check_point'])
         self.total_episodes = int(main_info['num_train_episodes']) + int(main_info['num_test_episodes'])
         # other fields
@@ -69,8 +74,8 @@ class Game:
         self.done = False
 
     def calculate_start_positions(self):
-        zombie_home_length = int(self.grid.get_height() - 2 * self.grid.get_width() * math.tan((self.max_angle)))
-        zombie_home_start_pos = int(self.grid.get_height() - zombie_home_length - self.grid.get_width() * math.tan(self.max_angle))  # m-n-b
+        zombie_home_length = int(self.grid.get_height() - 2 * self.grid.get_width() * math.tan(self.max_angle * math.pi / 180))
+        zombie_home_start_pos = int(self.grid.get_height() - zombie_home_length - self.grid.get_width() * math.tan(self.max_angle * math.pi / 180))  # m-n-b
         return np.multiply(list(range(zombie_home_start_pos, zombie_home_start_pos + zombie_home_length)), self.grid.get_width())
 
     def reset(self):
@@ -105,7 +110,8 @@ class Game:
                 steps_dict_zombie['step'].append(time_step)
 
                 reward = self.apply_actions(action_zombie, action_light)
-                zombie_master_reward += reward
+                if reward > 0:
+                    zombie_master_reward += reward
                 next_state_zombie, next_state_light = self.get_state()
 
                 self.agent_zombie.learn(state_zombie.unsqueeze(0), action_zombie, next_state_zombie.unsqueeze(0), reward)
@@ -159,9 +165,10 @@ class Game:
             self.update(light_action)
 
         # add new zombie
-        new_zombie = Game.create_zombie(zombie_action)
-        self.alive_zombies.append(new_zombie)
-        self.all_zombies.append(new_zombie)
+        if len(self.all_zombies) < self.zombies_per_episode:
+            new_zombie = Game.create_zombie(zombie_action)
+            self.alive_zombies.append(new_zombie)
+            self.all_zombies.append(new_zombie)
 
         # move all zombies one step and calc reward
         reward, self.alive_zombies = Game.calc_reward_and_move_zombies(self.alive_zombies, light_action)
@@ -181,9 +188,13 @@ class Game:
         indices_to_keep = list(range(len(new_alive_zombies)))
         for index, zombie in enumerate(new_alive_zombies):
             zombie.move(light_action)
-            if zombie.x >= Game.BOARD_WIDTH:
+            if 0 >= zombie.y or zombie.y >= Game.BOARD_HEIGHT:
+                indices_to_keep.remove(index)
+            elif zombie.x >= Game.BOARD_WIDTH:
                 if Game.keep_alive(zombie.hit_points):  # decide whether to keep the zombie alive, if so, give the zombie master reward
                     reward += 1
+                else:
+                    reward -= 1
                 indices_to_keep.remove(index)  # deleting a zombie that reached the border
         return reward, list(np.array(new_alive_zombies)[indices_to_keep])
 
@@ -198,7 +209,8 @@ class Game:
              For example, if zombie hit points is 3 - > the result is 1 -> always return False (the random will never be greater than 1)
             in the past sin(h * pi / 2 * self.max_hit_points) < random.random()
             """
-            return np.power(h / Game.MAX_HIT_POINTS, 1 / 3) < random.random()
+            #return np.power(h / Game.MAX_HIT_POINTS, 1 / 3) < random.random()
+            return True
 
     def get_state(self):
         zombie_grid = self.grid.get_values()
@@ -271,7 +283,7 @@ class Game:
                                                                self.start_positions))) / self.grid.get_width() * y_adjustment])
 
         path = os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)), "gameUtils")
-        pygame.image.save(self.game_display,  os.path.join(path, 'grid.jpeg'))
+        pygame.image.save(self.game_display, os.path.join(path, 'grid.jpeg'))
 
     def end_game(self):
         pygame.quit()
